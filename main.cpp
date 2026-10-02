@@ -1,94 +1,115 @@
 #include <Arduino.h>
 
-// -------------------------------------------------------------
-// Laboratory Activity 5: Structured Workstation Light
-// Board: DOIT ESP32 DEVKIT V1 (PlatformIO)
-// -------------------------------------------------------------
-
-// Pin Definitions
-const int BUTTON_PIN = 4; // Momentary enable button (active-LOW)
-const int POT_PIN = 34; // Potentiometer wiper (ADC1_CH6)
-const int LED_PIN = 18; // Workstation light output
-
-// PWM Configuration
-const int PWM_FREQ = 5000; // 5 kHz
-const int PWM_RESOLUTION = 8; // 8-bit resolution (values 0 - 255)
-
-// Global State Variables
-bool isEnabled = false;
-int rawPotValue = 0;
-int outputDuty = 0;
 
 // -------------------------------------------------------------
-// Required Scaling Function: maps 12-bit ADC to 8-bit PWM duty
+// Pin and Configuration Constants
+// -------------------------------------------------------------
+const int BUTTON_PIN     = 4;   // Momentary enable button (Active-LOW)
+const int POT_PIN        = 34;  // Potentiometer input
+const int STATUS_LED_PIN = 2;   // Status indicator LED
+const int PWM_LED_PIN    = 18;  // Dimming LED output
+
+
+// PWM Peripheral Configuration (Core v2.x requires a PWM channel)
+const int PWM_CHANNEL    = 0;
+const int PWM_FREQ       = 5000; // 5 kHz
+const int PWM_RESOLUTION = 8;    // 8-bit resolution (0 - 255)
+
+
+// -------------------------------------------------------------
+// Global Variables for System State
+// -------------------------------------------------------------
+bool isEnabled    = false; // Button state: true when held, false when released
+int rawPotValue   = 0;     // Raw ADC value from potentiometer (0 - 4095)
+int appliedDuty   = 0;     // Computed PWM duty cycle (0 - 255)
+bool statusLedOn  = false; // State of the status LED
+
+
+// -------------------------------------------------------------
+// Helper / Scaling Function
 // -------------------------------------------------------------
 int scaleToDuty(int raw) {
   int clamped = constrain(raw, 0, 4095);
   return map(clamped, 0, 4095, 0, 255);
 }
 
+
 // -------------------------------------------------------------
-// 1. INPUT FUNCTION: Sample physical hardware
+// Structured Architecture Functions
 // -------------------------------------------------------------
+
+
+// 1. INPUT: Reads button state and potentiometer value
 void readInputs() {
-  // Active-LOW logic: button reads LOW when held down
+  // Active-LOW button: LOW means pressed / held
   isEnabled = (digitalRead(BUTTON_PIN) == LOW);
   rawPotValue = analogRead(POT_PIN);
 }
 
-// -------------------------------------------------------------
-// 2. PROCESSING FUNCTION: Decision logic and math
-// -------------------------------------------------------------
-void processLogic() {
+
+// 2. PROCESS: Scales input and decides whether to apply duty or zero
+void processInputs() {
   if (isEnabled) {
-    outputDuty = scaleToDuty(rawPotValue);
+    statusLedOn = true;
+    appliedDuty = scaleToDuty(rawPotValue);
   } else {
-    // When button is released, light control is disabled and output is forced off
-    outputDuty = 0;
+    statusLedOn = false;
+    appliedDuty = 0;
   }
 }
 
-// -------------------------------------------------------------
-// 3. OUTPUT FUNCTION: Drive hardware using universal LEDC API
-// -------------------------------------------------------------
-void writeOutputs() {
-  #if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
-    ledcWrite(LED_PIN, outputDuty);
-  #else
-    ledcWrite(0, outputDuty); // channel 0
-  #endif
+
+// 3. WRITE: Sends the decision to both outputs
+void updateOutputs() {
+  // Update status LED
+  digitalWrite(STATUS_LED_PIN, statusLedOn ? HIGH : LOW);
+
+
+  // Update PWM brightness LED via PWM channel
+  ledcWrite(PWM_CHANNEL, appliedDuty);
 }
 
+
+// -------------------------------------------------------------
+// Setup & Main Loop
+// -------------------------------------------------------------
 void setup() {
   Serial.begin(115200);
 
-  // Configure digital input with internal pull-up
+
+  // Configure Inputs
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
-  // Setup PWM pin across both older (v2.x) and newer (v3.x+) ESP32 cores
-  #if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
-    ledcAttach(LED_PIN, PWM_FREQ, PWM_RESOLUTION);
-  #else
-    ledcSetup(0, PWM_FREQ, PWM_RESOLUTION); // channel 0
-    ledcAttachPin(LED_PIN, 0);
-  #endif
 
-  // Ensure output starts completely off upon boot/reset
-  writeOutputs();
+  // Configure Status Output
+  pinMode(STATUS_LED_PIN, OUTPUT);
+
+
+  // Configure PWM Output (ESP32 Core v2.x syntax)
+  ledcSetup(PWM_CHANNEL, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttachPin(PWM_LED_PIN, PWM_CHANNEL);
+
+
+  // Initial state check: ensure outputs start off
+  updateOutputs();
 }
+
 
 void loop() {
   readInputs();
-  processLogic();
-  writeOutputs();
+  processInputs();
+  updateOutputs();
 
-  // Serial debug logging
+
+  // Serial debug monitor output
   Serial.print("Enabled: ");
   Serial.print(isEnabled ? "YES" : "NO");
-  Serial.print(" | Raw ADC: ");
+  Serial.print(" | ADC: ");
   Serial.print(rawPotValue);
-  Serial.print(" | Output Duty: ");
-  Serial.println(outputDuty);
+  Serial.print(" | Applied Duty: ");
+  Serial.println(appliedDuty);
 
+
+  // 20 ms loop pacing
   delay(20);
 }
